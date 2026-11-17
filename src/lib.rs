@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod config;
+mod connection;
 pub mod error;
 pub mod forwarder;
 pub mod logging;

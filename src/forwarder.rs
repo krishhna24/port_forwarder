@@ -3,12 +3,14 @@
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, info_span, warn};
 
 use crate::config::{self, Config};
+use crate::connection::Connection;
 use crate::error::{Error, Result};
 
 /// Pause after an accept error that is likely to repeat immediately (for
@@ -22,6 +24,7 @@ pub struct Forwarder {
     listener: TcpListener,
     local_addr: SocketAddr,
     config: Arc<Config>,
+    next_id: AtomicU64,
 }
 
 impl Forwarder {
@@ -47,6 +50,7 @@ impl Forwarder {
                         listener,
                         local_addr,
                         config: Arc::new(config),
+                        next_id: AtomicU64::new(1),
                     });
                 }
                 Err(err) => last_err = Some(err),
@@ -82,17 +86,33 @@ impl Forwarder {
         );
         loop {
             match self.listener.accept() {
-                Ok((stream, peer)) => dispatch(stream, peer),
+                Ok((stream, peer)) => self.dispatch(stream, peer),
                 Err(err) => handle_accept_error(&err),
             }
         }
     }
-}
 
-fn dispatch(stream: TcpStream, peer: SocketAddr) {
-    info!(client = %peer, "accepted connection");
-    // Connection handling is added in a later step; close politely.
-    drop(stream);
+    /// Hands an accepted client to its own thread.
+    fn dispatch(&self, client: TcpStream, client_addr: SocketAddr) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let span = info_span!("conn", id, client = %client_addr);
+        span.in_scope(|| info!("accepted connection"));
+
+        // Some platforms let accepted sockets inherit the listener's flags.
+        if let Err(err) = client.set_nonblocking(false) {
+            span.in_scope(|| warn!(error = %err, "cannot make client blocking; dropping"));
+            return;
+        }
+        if let Err(err) = client.set_nodelay(true) {
+            span.in_scope(|| debug!(error = %err, "failed to set TCP_NODELAY on client"));
+        }
+
+        let conn = Connection {
+            client,
+            config: Arc::clone(&self.config),
+        };
+        thread::spawn(move || span.in_scope(|| conn.run()));
+    }
 }
 
 /// Logs an accept error and backs off when retrying immediately would spin.

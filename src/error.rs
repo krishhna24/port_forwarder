@@ -36,6 +36,16 @@ pub enum Error {
         source: io::Error,
     },
 
+    /// No resolved upstream address accepted a connection.
+    #[error("failed to connect to upstream `{addr}`: {source}")]
+    Connect {
+        /// The upstream address as supplied by the user.
+        addr: String,
+        /// The error from the last address that was tried.
+        #[source]
+        source: io::Error,
+    },
+
     /// Any other I/O error.
     #[error(transparent)]
     Io(#[from] io::Error),
