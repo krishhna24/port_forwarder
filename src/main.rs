@@ -1,17 +1,22 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use rust_tcp_forwarder::cli::Args;
+use rust_tcp_forwarder::{Forwarder, cli::Args, logging};
+use tracing::error;
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    let config = match args.into_config() {
-        Ok(config) => config,
+    logging::init();
+
+    let result = args
+        .into_config()
+        .and_then(Forwarder::bind)
+        .and_then(Forwarder::run);
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("error: {err}");
-            return ExitCode::FAILURE;
+            error!(error = %err, "fatal error");
+            ExitCode::FAILURE
         }
-    };
-    println!("configuration: {config:?}");
-    ExitCode::SUCCESS
+    }
 }

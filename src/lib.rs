@@ -7,6 +7,9 @@
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod forwarder;
+pub mod logging;
 
 pub use config::Config;
 pub use error::{Error, Result};
+pub use forwarder::Forwarder;
