@@ -39,7 +39,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::{self, Config};
 use crate::error::{Error, Result};
-use crate::forwarder::{Permit, ShutdownSignal};
+use crate::forwarder::{Counters, Permit, ShutdownSignal};
 
 /// Upper bound on how long a blocked call waits before re-checking deadlines.
 /// This bounds how quickly a forced shutdown takes effect.
@@ -53,6 +53,8 @@ pub(crate) struct Connection {
     pub(crate) client: TcpStream,
     pub(crate) config: Arc<Config>,
     pub(crate) signal: Arc<ShutdownSignal>,
+    pub(crate) counters: Arc<Counters>,
+    pub(crate) accepted_at: Instant,
     /// Connection slot; released when the connection finishes.
     pub(crate) permit: Permit,
 }
@@ -65,6 +67,8 @@ impl Connection {
             client,
             config,
             signal,
+            counters,
+            accepted_at,
             permit,
         } = self;
 
@@ -74,13 +78,20 @@ impl Connection {
                 // Dropping would close it too, but shutting down first makes
                 // the intent explicit and sends FIN even if a clone leaked.
                 let _ = client.shutdown(Shutdown::Both);
+                counters.upstream_failures.fetch_add(1, Ordering::Relaxed);
                 let active = permit.remaining();
                 warn!(error = %err, active, "upstream connection failed; closed client");
                 return;
             }
         };
-        let upstream_addr = upstream.peer_addr().ok();
-        info!(upstream = ?upstream_addr, "upstream connected");
+        let upstream_addr = upstream
+            .peer_addr()
+            .map_or_else(|_| config.upstream.clone(), |addr| addr.to_string());
+        info!(
+            upstream = %upstream_addr,
+            connect_ms = millis(accepted_at.elapsed()),
+            "upstream connected"
+        );
 
         // The connect may have taken up to connect-timeout; do not start
         // forwarding if a forced shutdown arrived meanwhile.
@@ -98,18 +109,34 @@ impl Connection {
         // Log before `permit` drops at the end of this scope: once the slot
         // is free, shutdown may complete and the process exit.
         let active = permit.remaining();
+        let duration_ms = millis(accepted_at.elapsed());
         match result {
-            Ok((up, down)) => info!(
-                bytes_client_to_upstream = up.bytes,
-                bytes_upstream_to_client = down.bytes,
-                client_to_upstream = %up.end,
-                upstream_to_client = %down.end,
-                active,
-                "connection closed"
-            ),
-            Err(err) => warn!(error = %err, active, "failed to start forwarding"),
+            Ok((up, down)) => {
+                counters.completed.fetch_add(1, Ordering::Relaxed);
+                counters
+                    .bytes_client_to_upstream
+                    .fetch_add(up.bytes, Ordering::Relaxed);
+                counters
+                    .bytes_upstream_to_client
+                    .fetch_add(down.bytes, Ordering::Relaxed);
+                info!(
+                    upstream = %upstream_addr,
+                    bytes_client_to_upstream = up.bytes,
+                    bytes_upstream_to_client = down.bytes,
+                    duration_ms,
+                    client_to_upstream = %up.end,
+                    upstream_to_client = %down.end,
+                    active,
+                    "connection closed"
+                );
+            }
+            Err(err) => warn!(error = %err, duration_ms, active, "failed to start forwarding"),
         }
     }
+}
+
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Which way bytes flow through a copy loop.
@@ -203,7 +230,7 @@ impl Pair<'_> {
     }
 
     fn elapsed_ms(&self) -> u64 {
-        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+        millis(self.started.elapsed())
     }
 
     /// Records that bytes moved in some direction.

@@ -6,7 +6,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tracing::{debug, error, info, info_span, warn};
 
@@ -32,6 +32,7 @@ pub struct Forwarder {
     config: Arc<Config>,
     limiter: Arc<ConnectionLimiter>,
     signal: Arc<ShutdownSignal>,
+    counters: Arc<Counters>,
     next_id: AtomicU64,
 }
 
@@ -59,6 +60,7 @@ impl Forwarder {
                         local_addr,
                         limiter: Arc::new(ConnectionLimiter::new(config.max_connections)),
                         signal: Arc::new(ShutdownSignal::default()),
+                        counters: Arc::new(Counters::default()),
                         config: Arc::new(config),
                         next_id: AtomicU64::new(1),
                     });
@@ -88,6 +90,7 @@ impl Forwarder {
         ShutdownHandle {
             signal: Arc::clone(&self.signal),
             limiter: Arc::clone(&self.limiter),
+            counters: Arc::clone(&self.counters),
             wake_addr: connection::connectable(self.local_addr),
         }
     }
@@ -154,9 +157,12 @@ impl Forwarder {
                 max_connections = self.limiter.max(),
                 "connection limit reached; rejecting client"
             );
+            self.counters.rejected.fetch_add(1, Ordering::Relaxed);
             drop(client);
             return;
         };
+        let accepted_at = Instant::now();
+        self.counters.accepted.fetch_add(1, Ordering::Relaxed);
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let span = info_span!("conn", id, client = %client_addr);
@@ -175,6 +181,8 @@ impl Forwarder {
             client,
             config: Arc::clone(&self.config),
             signal: Arc::clone(&self.signal),
+            counters: Arc::clone(&self.counters),
+            accepted_at,
             permit,
         };
         let thread_span = span.clone();
@@ -261,6 +269,40 @@ impl ShutdownSignal {
     }
 }
 
+/// Live counters shared by the accept loop and connection threads.
+///
+/// Byte totals are added when a connection closes, so long-lived connections
+/// are not reflected until they finish.
+#[derive(Debug, Default)]
+pub(crate) struct Counters {
+    pub(crate) accepted: AtomicU64,
+    pub(crate) rejected: AtomicU64,
+    pub(crate) upstream_failures: AtomicU64,
+    pub(crate) completed: AtomicU64,
+    pub(crate) bytes_client_to_upstream: AtomicU64,
+    pub(crate) bytes_upstream_to_client: AtomicU64,
+}
+
+/// A point-in-time snapshot of forwarder statistics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Stats {
+    /// Connections currently being served.
+    pub active: usize,
+    /// Connections accepted and handed to a handler thread.
+    pub accepted: u64,
+    /// Connections closed immediately because the limit was reached.
+    pub rejected: u64,
+    /// Accepted connections whose upstream connect failed.
+    pub upstream_failures: u64,
+    /// Connections that were forwarded and have since closed.
+    pub completed: u64,
+    /// Bytes forwarded client -> upstream by completed connections.
+    pub bytes_client_to_upstream: u64,
+    /// Bytes forwarded upstream -> client by completed connections.
+    pub bytes_upstream_to_client: u64,
+}
+
 /// Stops a running [`Forwarder`]. Cheap to clone; safe to call from any
 /// thread, including a signal-handling thread.
 ///
@@ -274,6 +316,7 @@ impl ShutdownSignal {
 pub struct ShutdownHandle {
     signal: Arc<ShutdownSignal>,
     limiter: Arc<ConnectionLimiter>,
+    counters: Arc<Counters>,
     wake_addr: SocketAddr,
 }
 
@@ -300,6 +343,20 @@ impl ShutdownHandle {
     /// Number of connections currently being forwarded.
     pub fn active_connections(&self) -> usize {
         self.limiter.active()
+    }
+
+    /// A snapshot of the forwarder's counters.
+    pub fn stats(&self) -> Stats {
+        let c = &self.counters;
+        Stats {
+            active: self.limiter.active(),
+            accepted: c.accepted.load(Ordering::Relaxed),
+            rejected: c.rejected.load(Ordering::Relaxed),
+            upstream_failures: c.upstream_failures.load(Ordering::Relaxed),
+            completed: c.completed.load(Ordering::Relaxed),
+            bytes_client_to_upstream: c.bytes_client_to_upstream.load(Ordering::Relaxed),
+            bytes_upstream_to_client: c.bytes_upstream_to_client.load(Ordering::Relaxed),
+        }
     }
 
     /// `accept` blocks and cannot be interrupted portably, so connect to

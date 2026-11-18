@@ -6,6 +6,7 @@ use clap::Parser;
 
 use crate::config::{Config, DEFAULT_MAX_CONNECTIONS};
 use crate::error::Result;
+use crate::logging::LogFormat;
 
 // clap needs `&'static str` defaults; `cli_defaults_match_config_defaults`
 // guarantees these stay in sync with the constants in `config`.
@@ -52,6 +53,10 @@ pub struct Args {
     #[arg(long, value_name = "SIZE", value_parser = parse_size,
           default_value = DEFAULT_BUFFER_SIZE_STR)]
     pub buffer_size: usize,
+
+    /// Log output format; verbosity is controlled with `RUST_LOG` (default: info).
+    #[arg(long, value_enum, default_value_t = LogFormat::Text)]
+    pub log_format: LogFormat,
 }
 
 impl Args {

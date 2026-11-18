@@ -6,7 +6,7 @@ use tracing::{error, info, warn};
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    logging::init();
+    logging::init(args.log_format);
 
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,

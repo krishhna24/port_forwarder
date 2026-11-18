@@ -13,4 +13,5 @@ pub mod logging;
 
 pub use config::Config;
 pub use error::{Error, Result};
-pub use forwarder::{Forwarder, ShutdownHandle};
+pub use forwarder::{Forwarder, ShutdownHandle, Stats};
+pub use logging::LogFormat;
