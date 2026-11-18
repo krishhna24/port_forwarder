@@ -446,7 +446,57 @@ fn main() -> rust_tcp_forwarder::Result<()> {
 
 See `cargo bench --bench forwarding`; measured results are recorded below.
 
-<!-- PERF_RESULTS -->
+Results from one run on the development machine (12 CPUs, WSL2 on Linux
+6.18, loopback TCP, client, forwarder and upstream in one process, optimized
+build, `BENCH_MIB=256 BENCH_ROUNDTRIPS=10000`). They are indicative only:
+loopback hides real network latency, and WSL2 timings are noisy. Re-run them
+on your own hardware before drawing conclusions.
+
+### Throughput (one-way, client -> sink, 256 MiB per run)
+
+| path | buffer | MiB/s (median of 3) | vs direct |
+|---|---|---:|---:|
+| direct | - | 4319.6 | - |
+| forwarder | 16 KiB | 1178.8 | -72.7% |
+| forwarder | 64 KiB | 2152.6 | -50.2% |
+| forwarder | 256 KiB | 3483.1 | -19.4% |
+
+### Latency (64-byte ping-pong, 10000 round trips per run)
+
+| path | mean us | p50 us | p99 us |
+|---|---:|---:|---:|
+| direct | 51.0 | 44.8 | 90.3 |
+| forwarder | 95.9 | 88.0 | 155.7 |
+
+### Concurrency (forwarder, 64 KiB buffer, 256 MiB total split across connections)
+
+| connections | aggregate MiB/s (median of 3) |
+|---:|---:|
+| 1 | 2248.6 |
+| 16 | 5945.5 |
+| 64 | 4905.1 |
+
+How to read these numbers:
+
+- Every forwarded byte crosses the kernel twice more than on a direct
+  connection (read from the client socket, written to the upstream socket), so
+  single-stream throughput depends on the copy buffer. Larger `--buffer-size`
+  values mean fewer system calls per MiB, which narrows the gap to direct
+  loopback at the cost of more memory per connection.
+- The extra hop roughly doubled small-message round-trip latency on loopback
+  (about 45µs to about 88µs p50). Over a real network, the RTT usually
+  dominates this cost.
+- Aggregate throughput scales with parallel connections until the CPUs are
+  saturated. The drop from 16 to 64 connections (128 copy threads on 12
+  CPUs) most likely comes from scheduler and context-switch overhead. See
+  the thread-per-connection discussion under Known limitations.
+
+Reproduce with:
+
+```sh
+cargo bench --bench forwarding
+BENCH_MIB=64 BENCH_ROUNDTRIPS=2000 cargo bench --bench forwarding   # quicker run
+```
 
 ## Architecture and concurrency decisions
 
