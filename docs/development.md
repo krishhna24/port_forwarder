@@ -92,15 +92,14 @@ Logs go to stderr. Verbosity comes from `RUST_LOG` (default `info`):
 
 ```sh
 RUST_LOG=rust_tcp_forwarder=debug cargo run -- -l 127.0.0.1:8080 -u 127.0.0.1:9000
-RUST_LOG=info,rust_tcp_forwarder=debug cargo run -- -l 127.0.0.1:8080 -u 127.0.0.1:9000
+RUST_LOG=info,rust_tcp_forwarder::connection=trace cargo run -- -l 127.0.0.1:8080 -u 127.0.0.1:9000
 RUST_LOG=rust_tcp_forwarder::connection=debug cargo run -- ...
 ```
 
 The library logs under `rust_tcp_forwarder::forwarder` and
 `rust_tcp_forwarder::connection`. The binary's own messages (signal handling,
-`fatal error`) use the target `tcp_forwarder`. A filter that names only
-`rust_tcp_forwarder` hides them, so use the `info,rust_tcp_forwarder=debug`
-form when you need both.
+`fatal error`) use `rust_tcp_forwarder::main`, so a filter on the
+`rust_tcp_forwarder` prefix covers all of them.
 
 | Level | What you get |
 | ----- | ------------ |

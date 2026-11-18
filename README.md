@@ -277,13 +277,9 @@ At `debug` level you also get the resolved upstream addresses, a line each
 time one direction finishes (`direction finished dir=upstream->client bytes=959 reason=eof`),
 failures for individual upstream addresses, and transient accept errors.
 
-The filter above enables **only** the library target. The binary logs its
-signal-handling and `fatal error` messages under the target `tcp_forwarder`,
-so they are hidden by that filter. To keep them, add a default level:
-
-```sh
-RUST_LOG=info,rust_tcp_forwarder=debug tcp-forwarder -l 127.0.0.1:8080 -u 127.0.0.1:9000
-```
+All log lines, including the binary's signal-handling and `fatal error`
+messages (target `rust_tcp_forwarder::main`), use the `rust_tcp_forwarder`
+target prefix, so this one filter covers everything.
 
 ## CLI reference
 
